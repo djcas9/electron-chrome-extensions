@@ -1,12 +1,21 @@
+import * as path from 'path'
 import { expect } from 'chai'
 import { BrowserView, Extension, ipcMain, session, WebContents } from 'electron'
 
 import { emittedOnce } from './events-helpers'
 import { uuid } from './spec-helpers'
 import { useExtensionBrowser, useServer } from './hooks'
+import { createCrxRemoteWindow } from './crx-helpers'
 
 describe('chrome.browserAction', () => {
   const server = useServer()
+
+  const defaultAnchorRect = {
+    x: 0,
+    y: 0,
+    width: 16,
+    height: 16,
+  }
 
   const activateExtension = async (
     partition: string,
@@ -14,10 +23,15 @@ describe('chrome.browserAction', () => {
     extension: Extension,
     tabId: number = -1
   ) => {
-    // TODO: use preload script with `injectBrowserAction()`
-    await webContents.executeJavaScript(
-      `require('electron').ipcRenderer.invoke('CHROME_EXT_REMOTE', '${partition}', 'browserAction.activate', '${extension.id}', ${tabId})`
-    )
+    const details = {
+      eventType: 'click',
+      extensionId: extension.id,
+      tabId,
+      anchorRect: defaultAnchorRect,
+    }
+
+    const js = `browserAction.activate('${partition}', ${JSON.stringify(details)})`
+    await webContents.executeJavaScript(js)
   }
 
   describe('messaging', () => {
@@ -27,9 +41,11 @@ describe('chrome.browserAction', () => {
     })
 
     it('supports cross-session communication', async () => {
-      const otherSession = session.fromPartition(`persist:${uuid()}`)
+      const otherSession = session.fromPartition(`persist:crx-${uuid()}`)
+      otherSession.setPreloads(browser.session.getPreloads())
+
       const view = new BrowserView({
-        webPreferences: { session: otherSession, nodeIntegration: true },
+        webPreferences: { session: otherSession, nodeIntegration: false, contextIsolation: true },
       })
       await view.webContents.loadURL(server.getUrl())
       browser.window.addBrowserView(view)
@@ -42,13 +58,15 @@ describe('chrome.browserAction', () => {
     })
 
     it('throws for unknown tab', async () => {
-      const p = activateExtension(
-        browser.partition,
-        browser.window.webContents,
-        browser.extension,
-        99999
-      )
-      await expect(p).rejectedWith(/^Error invoking remote method/)
+      const tab = browser.window.webContents
+      const unknownTabId = 99999
+      let caught = false
+      try {
+        await activateExtension(browser.partition, tab, browser.extension, unknownTabId)
+      } catch {
+        caught = true
+      }
+      expect(caught).to.be.true
     })
   })
 
@@ -81,7 +99,13 @@ describe('chrome.browserAction', () => {
     })
 
     it('opens when BrowserView is the active tab', async () => {
-      const view = new BrowserView({ webPreferences: { session: browser.session } })
+      const view = new BrowserView({
+        webPreferences: {
+          session: browser.session,
+          nodeIntegration: false,
+          contextIsolation: true,
+        },
+      })
       await view.webContents.loadURL(server.getUrl())
       browser.window.addBrowserView(view)
       browser.extensions.addTab(view.webContents, browser.window)
@@ -110,19 +134,82 @@ describe('chrome.browserAction', () => {
     for (const { method, detail, value } of props) {
       it(`sets and gets '${detail}'`, async () => {
         const newValue = value || uuid()
-        await browser.exec(`browserAction.set${method}`, { [detail]: newValue })
-        const result = await browser.exec(`browserAction.get${method}`)
+        await browser.crx.exec(`browserAction.set${method}`, { [detail]: newValue })
+        const result = await browser.crx.exec(`browserAction.get${method}`)
         expect(result).to.equal(newValue)
       })
 
       it(`restores initial values for '${detail}'`, async () => {
         const newValue = value || uuid()
-        const initial = await browser.exec(`browserAction.get${method}`)
-        await browser.exec(`browserAction.set${method}`, { [detail]: newValue })
-        await browser.exec(`browserAction.set${method}`, { [detail]: null })
-        const result = await browser.exec(`browserAction.get${method}`)
+        const initial = await browser.crx.exec(`browserAction.get${method}`)
+        await browser.crx.exec(`browserAction.set${method}`, { [detail]: newValue })
+        await browser.crx.exec(`browserAction.set${method}`, { [detail]: null })
+        const result = await browser.crx.exec(`browserAction.get${method}`)
         expect(result).to.equal(initial)
       })
     }
+
+    it('uses custom popup when opening browser action', async () => {
+      const popupUuid = uuid()
+      const popupPath = `popup.html?${popupUuid}`
+      await browser.crx.exec('browserAction.setPopup', { popup: popupPath })
+      const popupPromise = emittedOnce(browser.extensions, 'browser-action-popup-created')
+      await activateExtension(browser.partition, browser.window.webContents, browser.extension)
+      const [popup] = await popupPromise
+      await popup.whenReady()
+      expect(popup.browserWindow.webContents.getURL()).to.equal(
+        `chrome-extension://${browser.extension.id}/${popupPath}`
+      )
+    })
+  })
+
+  describe('<browser-action-list> element', () => {
+    const basePath = path.join(__dirname, 'fixtures/browser-action-list')
+
+    const browser = useExtensionBrowser({
+      extensionName: 'chrome-browserAction-popup',
+    })
+
+    it('lists actions', async () => {
+      await browser.webContents.loadFile(path.join(basePath, 'default.html'))
+
+      const extensionIds = await browser.webContents.executeJavaScript(
+        `(${() => {
+          const list = document.querySelector('browser-action-list')!
+          const actions = list.shadowRoot!.querySelectorAll('.action')
+          const ids = Array.from(actions).map((elem) => elem.id)
+          return ids
+        }})();`
+      )
+
+      expect(extensionIds).to.deep.equal([browser.extension.id])
+    })
+
+    it('lists actions in remote partition', async () => {
+      const remoteWindow = createCrxRemoteWindow()
+      const remoteTab = remoteWindow.webContents
+
+      await remoteTab.loadURL(server.getUrl())
+
+      // Add <browser-action-list> for remote partition.
+      await remoteTab.executeJavaScript(
+        `(${(partition: string) => {
+          const list = document.createElement('browser-action-list')
+          list.setAttribute('partition', partition)
+          document.body.appendChild(list)
+        }})('${browser.partition}');`
+      )
+
+      const extensionIds = await remoteTab.executeJavaScript(
+        `(${() => {
+          const list = document.querySelector('browser-action-list')!
+          const actions = list.shadowRoot!.querySelectorAll('.action')
+          const ids = Array.from(actions).map((elem) => elem.id)
+          return ids
+        }})();`
+      )
+
+      expect(extensionIds).to.deep.equal([browser.extension.id])
+    })
   })
 })

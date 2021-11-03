@@ -40,8 +40,21 @@ class WebUI {
     )
     this.$.closeButton.addEventListener('click', () => chrome.windows.remove())
 
-    this.setupBrowserListeners()
     this.initTabs()
+  }
+
+  async initTabs() {
+    const tabs = await new Promise((resolve) => chrome.tabs.query({ windowId: -2 }, resolve))
+    this.tabList = [...tabs]
+    this.renderTabs()
+
+    const activeTab = this.tabList.find((tab) => tab.active)
+    if (activeTab) {
+      this.setActiveTab(activeTab)
+    }
+
+    // Wait to setup tabs and windowId prior to listening for updates.
+    this.setupBrowserListeners()
   }
 
   setupBrowserListeners() {
@@ -49,9 +62,24 @@ class WebUI {
       throw new Error(`chrome global not setup. Did the extension preload not get run?`)
     }
 
+    const findTab = (tabId) => {
+      const existingTab = this.tabList.find((tab) => tab.id === tabId)
+      return existingTab
+    }
+
+    const findOrCreateTab = (tabId) => {
+      const existingTab = findTab(tabId)
+      if (existingTab) return existingTab
+
+      const newTab = { id: tabId }
+      this.tabList.push(newTab)
+      return newTab
+    }
+
     chrome.tabs.onCreated.addListener((tab) => {
       if (tab.windowId !== this.windowId) return
-      this.tabList.push(tab)
+      const newTab = findOrCreateTab(tab.id)
+      Object.assign(newTab, tab)
       this.renderTabs()
     })
 
@@ -59,14 +87,12 @@ class WebUI {
       if (activeInfo.windowId !== this.windowId) return
 
       this.setActiveTab(activeInfo)
-
-      this.initTabs() // get updated info on all tabs
     })
 
-    chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-      const tab = this.tabList.find((tab) => tab.id === tabId)
+    chrome.tabs.onUpdated.addListener((tabId, changeInfo, details) => {
+      const tab = findTab(tabId)
       if (!tab) return
-      Object.assign(tab, changeInfo)
+      Object.assign(tab, details)
       this.renderTabs()
       if (tabId === this.activeTabId) this.renderToolbar(tab)
     })
@@ -80,23 +106,19 @@ class WebUI {
     })
   }
 
-  async initTabs() {
-    const tabs = await new Promise((resolve) => chrome.tabs.query({ windowId: -2 }, resolve))
-    this.tabList = [...tabs]
-    this.renderTabs()
-
-    const activeTab = this.tabList.find((tab) => tab.active)
-    if (activeTab) {
-      this.setActiveTab(activeTab)
-    }
-  }
-
   setActiveTab(activeTab) {
     this.activeTabId = activeTab.id || activeTab.tabId
     this.windowId = activeTab.windowId
 
-    const tab = this.tabList.find((tab) => tab.id === this.activeTabId)
-    if (tab) this.renderToolbar(tab)
+    for (const tab of this.tabList) {
+      if (tab.id === this.activeTabId) {
+        tab.active = true;
+        this.renderTab(tab)
+        this.renderToolbar(tab)
+      } else {
+        tab.active = false
+      }
+    }
   }
 
   onAddressUrlKeyPress(event) {
@@ -121,26 +143,30 @@ class WebUI {
     return tabElem
   }
 
+  renderTab(tab) {
+    let tabElem = this.$.tabList.querySelector(`[data-tab-id="${tab.id}"]`)
+    if (!tabElem) tabElem = this.createTabNode(tab)
+
+    if (tab.active) {
+      tabElem.dataset.active = ''
+    } else {
+      delete tabElem.dataset.active
+    }
+
+    const favicon = tabElem.querySelector('.favicon')
+    if (tab.favIconUrl) {
+      favicon.src = tab.favIconUrl
+    } else {
+      delete favicon.src
+    }
+
+    tabElem.querySelector('.title').textContent = tab.title
+    tabElem.querySelector('.audio').disabled = !tab.audible
+  }
+
   renderTabs() {
-    this.tabList.forEach((tab) => {
-      let tabElem = this.$.tabList.querySelector(`[data-tab-id="${tab.id}"]`)
-      if (!tabElem) tabElem = this.createTabNode(tab)
-
-      if (tab.active) {
-        tabElem.dataset.active = ''
-      } else {
-        delete tabElem.dataset.active
-      }
-
-      const favicon = tabElem.querySelector('.favicon')
-      if (tab.favIconUrl) {
-        favicon.src = tab.favIconUrl
-      } else {
-        delete favicon.src
-      }
-
-      tabElem.querySelector('.title').textContent = tab.title
-      tabElem.querySelector('.audio').disabled = !tab.audible
+    this.tabList.forEach(tab => {
+      this.renderTab(tab)
     })
   }
 

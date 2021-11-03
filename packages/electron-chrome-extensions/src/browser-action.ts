@@ -7,7 +7,14 @@ export const injectBrowserAction = () => {
   const observerCounts = new Map<string, number>()
 
   const invoke = <T>(name: string, partition: string, ...args: any[]): Promise<T> => {
-    return ipcRenderer.invoke('CHROME_EXT_REMOTE', partition, name, ...args)
+    return ipcRenderer.invoke('crx-msg-remote', partition, name, ...args)
+  }
+
+  interface ActivateDetails {
+    eventType: string
+    extensionId: string
+    tabId: number
+    anchorRect: { x: number; y: number; width: number; height: number }
   }
 
   const browserAction = {
@@ -30,13 +37,8 @@ export const injectBrowserAction = () => {
       return state
     },
 
-    activate: (
-      partition: string,
-      extensionId: string,
-      tabId: number,
-      boundingRect: { x: number; y: number; width: number; height: number }
-    ) => {
-      invoke('browserAction.activate', partition, extensionId, tabId, boundingRect)
+    activate: (partition: string, details: ActivateDetails) => {
+      return invoke('browserAction.activate', partition, details)
     },
 
     addObserver(partition: string) {
@@ -73,6 +75,7 @@ export const injectBrowserAction = () => {
     class BrowserActionElement extends HTMLButtonElement {
       private updateId?: number
       private badge?: HTMLDivElement
+      private pendingIcon?: HTMLImageElement
 
       get id(): string {
         return this.getAttribute('id') || ''
@@ -110,46 +113,9 @@ export const injectBrowserAction = () => {
       constructor() {
         super()
 
+        // TODO: event delegation
         this.addEventListener('click', this.onClick.bind(this))
-
-        const style = document.createElement('style')
-        style.textContent = `
-button {
-  width: 28px;
-  height: 28px;
-  background-color: transparent;
-  background-position: center;
-  background-repeat: no-repeat;
-  background-size: 70%;
-  border: none;
-  border-radius: 4px;
-  padding: 0;
-  position: relative;
-  outline: none;
-}
-
-button:hover {
-  background-color: var(--browser-action-hover-bg, rgba(255, 255, 255, 0.3));
-}
-
-.badge {
-  box-shadow: 0px 0px 1px 1px var(--browser-action-badge-outline, #444);
-  box-sizing: border-box;
-  max-width: 100%;
-  height: 12px;
-  padding: 0 2px;
-  border-radius: 2px;
-  position: absolute;
-  bottom: 1px;
-  right: 0;
-  pointer-events: none;
-  line-height: 1.5;
-  font-size: 9px;
-  font-weight: 400;
-  overflow: hidden;
-  white-space: nowrap;
-}`
-        this.appendChild(style)
+        this.addEventListener('contextmenu', this.onContextMenu.bind(this))
       }
 
       connectedCallback() {
@@ -163,6 +129,9 @@ button:hover {
           cancelAnimationFrame(this.updateId)
           this.updateId = undefined
         }
+        if (this.pendingIcon) {
+          this.pendingIcon = undefined
+        }
       }
 
       attributeChangedCallback() {
@@ -171,15 +140,31 @@ button:hover {
         }
       }
 
-      private onClick() {
+      private activate(event: Event) {
         const rect = this.getBoundingClientRect()
 
-        browserAction.activate(this.partition || DEFAULT_PARTITION, this.id, this.tab, {
-          x: rect.left,
-          y: rect.top,
-          width: rect.width,
-          height: rect.height,
+        browserAction.activate(this.partition || DEFAULT_PARTITION, {
+          eventType: event.type,
+          extensionId: this.id,
+          tabId: this.tab,
+          anchorRect: {
+            x: rect.left,
+            y: rect.top,
+            width: rect.width,
+            height: rect.height,
+          },
         })
+      }
+
+      private onClick(event: MouseEvent) {
+        this.activate(event)
+      }
+
+      private onContextMenu(event: MouseEvent) {
+        event.stopImmediatePropagation()
+        event.preventDefault()
+
+        this.activate(event)
       }
 
       private getBadge() {
@@ -187,6 +172,7 @@ button:hover {
         if (!badge) {
           this.badge = badge = document.createElement('div')
           badge.className = 'badge'
+          ;(badge as any).part = 'badge'
           this.appendChild(badge)
         }
         return badge
@@ -195,6 +181,28 @@ button:hover {
       private update() {
         if (this.updateId) return
         this.updateId = requestAnimationFrame(this.updateCallback.bind(this))
+      }
+
+      private updateIcon(info: any) {
+        const iconSize = 32
+        const resizeType = 2
+        const timeParam = info.iconModified ? `&t=${info.iconModified}` : ''
+        const iconUrl = `crx://extension-icon/${this.id}/${iconSize}/${resizeType}?tabId=${this.tab}${timeParam}`
+        const bgImage = `url(${iconUrl})`
+
+        if (this.pendingIcon) {
+          this.pendingIcon = undefined
+        }
+
+        // Preload icon to prevent it from blinking
+        const img = (this.pendingIcon = new Image())
+        img.onload = () => {
+          if (this.isConnected) {
+            this.style.backgroundImage = bgImage
+            this.pendingIcon = undefined
+          }
+        }
+        img.src = iconUrl
       }
 
       private updateCallback() {
@@ -208,11 +216,7 @@ button:hover {
 
         this.title = typeof info.title === 'string' ? info.title : ''
 
-        if (info.imageData) {
-          this.style.backgroundImage = info.imageData ? `url(${info.imageData['32']})` : ''
-        } else if (info.icon) {
-          this.style.backgroundImage = `url(${info.icon})`
-        }
+        this.updateIcon(info)
 
         if (info.text) {
           const badge = this.getBadge()
@@ -271,6 +275,42 @@ button:hover {
   display: flex;
   flex-direction: row;
   gap: 5px;
+}
+
+.action {
+  width: 28px;
+  height: 28px;
+  background-color: transparent;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: 70%;
+  border: none;
+  border-radius: 4px;
+  padding: 0;
+  position: relative;
+  outline: none;
+}
+
+.action:hover {
+  background-color: var(--browser-action-hover-bg, rgba(255, 255, 255, 0.3));
+}
+
+.badge {
+  box-shadow: 0px 0px 1px 1px var(--browser-action-badge-outline, #444);
+  box-sizing: border-box;
+  max-width: 100%;
+  height: 12px;
+  padding: 0 2px;
+  border-radius: 2px;
+  position: absolute;
+  bottom: 1px;
+  right: 0;
+  pointer-events: none;
+  line-height: 1.5;
+  font-size: 9px;
+  font-weight: 400;
+  overflow: hidden;
+  white-space: nowrap;
 }`
         shadowRoot.appendChild(style)
       }
@@ -332,6 +372,8 @@ button:hover {
               is: 'browser-action',
             }) as BrowserActionElement
             node.id = action.id
+            node.className = 'action'
+            ;(node as any).part = 'action'
             browserActionNode = node
             this.shadowRoot?.appendChild(browserActionNode)
           }

@@ -8,6 +8,7 @@ export const injectExtensionAPIs = () => {
   }
 
   const invokeExtension = async function (
+    extensionId: string,
     fnName: string,
     options: ExtensionMessageOptions = {},
     ...args: any[]
@@ -31,7 +32,7 @@ export const injectExtensionAPIs = () => {
     let result
 
     try {
-      result = await ipcRenderer.invoke('CHROME_EXT', fnName, ...args)
+      result = await ipcRenderer.invoke('crx-msg', extensionId, fnName, ...args)
     } catch (e) {
       // TODO: Set chrome.runtime.lastError?
       console.error(e)
@@ -61,9 +62,19 @@ export const injectExtensionAPIs = () => {
     // Use context bridge API or closure variable when context isolation is disabled.
     const electron = ((window as any).electron as typeof electronContext) || electronContext
 
-    const invokeExtension = (fnName: string, opts: ExtensionMessageOptions = {}) => (
-      ...args: any[]
-    ) => electron.invokeExtension(fnName, opts, ...args)
+    const chrome = window.chrome || {}
+    const extensionId = chrome.runtime?.id
+
+    // NOTE: This uses a synchronous IPC to get the extension manifest.
+    // To avoid this, JS bindings for RendererExtensionRegistry would be
+    // required.
+    const manifest: chrome.runtime.Manifest =
+      (extensionId && chrome.runtime.getManifest()) || ({} as any)
+
+    const invokeExtension =
+      (fnName: string, opts: ExtensionMessageOptions = {}) =>
+      (...args: any[]) =>
+        electron.invokeExtension(extensionId, fnName, opts, ...args)
 
     function imageData2base64(imageData: ImageData) {
       const canvas = document.createElement('canvas')
@@ -79,11 +90,12 @@ export const injectExtensionAPIs = () => {
 
     class ExtensionEvent<T extends Function> implements chrome.events.Event<T> {
       constructor(private name: string) {}
+
       addListener(callback: T) {
-        electron.addExtensionListener(this.name, callback)
+        electron.addExtensionListener(extensionId, this.name, callback)
       }
       removeListener(callback: T) {
-        electron.removeExtensionListener(this.name, callback)
+        electron.removeExtensionListener(extensionId, this.name, callback)
       }
 
       getRules(callback: (rules: chrome.events.Rule[]) => void): void
@@ -116,11 +128,6 @@ export const injectExtensionAPIs = () => {
       clear() {}
       // onChange: chrome.types.ChromeSettingChangedEvent
     }
-
-    const chrome = window.chrome || {}
-    const extensionId = chrome.runtime?.id
-    const manifest: chrome.runtime.Manifest =
-      (extensionId && chrome.runtime.getManifest()) || ({} as any)
 
     type DeepPartial<T> = {
       [P in keyof T]?: DeepPartial<T[P]>
@@ -185,6 +192,16 @@ export const injectExtensionAPIs = () => {
         },
       },
 
+      commands: {
+        factory: (base) => {
+          return {
+            ...base,
+            getAll: invokeExtension('commands.getAll'),
+            onCommand: new ExtensionEvent('commands.onCommand'),
+          }
+        },
+      },
+
       contextMenus: {
         factory: (base) => {
           let menuCounter = 0
@@ -192,6 +209,15 @@ export const injectExtensionAPIs = () => {
             [key: string]: chrome.contextMenus.CreateProperties['onclick']
           } = {}
           const menuCreate = invokeExtension('contextMenus.create')
+
+          let hasInternalListener = false
+          const addInternalListener = () => {
+            api.onClicked.addListener((info, tab) => {
+              const callback = menuCallbacks[info.menuItemId]
+              if (callback && tab) callback(info, tab)
+            })
+            hasInternalListener = true
+          }
 
           const api = {
             ...base,
@@ -203,6 +229,7 @@ export const injectExtensionAPIs = () => {
                 createProperties.id = `${++menuCounter}`
               }
               if (createProperties.onclick) {
+                if (!hasInternalListener) addInternalListener()
                 menuCallbacks[createProperties.id] = createProperties.onclick
                 delete createProperties.onclick
               }
@@ -216,11 +243,6 @@ export const injectExtensionAPIs = () => {
               (info: chrome.contextMenus.OnClickData, tab: chrome.tabs.Tab) => void
             >('contextMenus.onClicked'),
           }
-
-          api.onClicked.addListener((info, tab) => {
-            const callback = menuCallbacks[info.menuItemId]
-            if (callback && tab) callback(info, tab)
-          })
 
           return api
         },
@@ -240,6 +262,17 @@ export const injectExtensionAPIs = () => {
         },
       },
 
+      extension: {
+        factory: (base) => {
+          return {
+            ...base,
+            isAllowedIncognitoAccess: () => false,
+            // TODO: Add native implementation
+            getViews: () => [],
+          }
+        },
+      },
+
       notifications: {
         factory: (base) => {
           return {
@@ -250,6 +283,8 @@ export const injectExtensionAPIs = () => {
             getPermissionLevel: invokeExtension('notifications.getPermissionLevel'),
             update: invokeExtension('notifications.update'),
             onClicked: new ExtensionEvent('notifications.onClicked'),
+            onButtonClicked: new ExtensionEvent('notifications.onButtonClicked'),
+            onClosed: new ExtensionEvent('notifications.onClosed'),
           }
         },
       },
@@ -329,6 +364,7 @@ export const injectExtensionAPIs = () => {
             onRemoved: new ExtensionEvent('tabs.onRemoved'),
             onUpdated: new ExtensionEvent('tabs.onUpdated'),
             onActivated: new ExtensionEvent('tabs.onActivated'),
+            onReplaced: new ExtensionEvent('tabs.onReplaced'),
           }
           return api
         },

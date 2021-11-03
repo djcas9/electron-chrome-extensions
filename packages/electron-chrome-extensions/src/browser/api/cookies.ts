@@ -1,9 +1,13 @@
+import { ExtensionContext } from '../context'
 import { ExtensionEvent } from '../router'
-import { ExtensionStore } from '../store'
 
 enum CookieStoreID {
   Default = '0',
   Incognito = '1',
+}
+
+const onChangedCauseTranslation: { [key: string]: string } = {
+  'expired-overwrite': 'expired_overwrite',
 }
 
 const createCookieDetails = (cookie: Electron.Cookie): chrome.cookies.Cookie => ({
@@ -19,15 +23,18 @@ const createCookieDetails = (cookie: Electron.Cookie): chrome.cookies.Cookie => 
 
 export class CookiesAPI {
   private get cookies() {
-    return this.store.session.cookies
+    return this.ctx.session.cookies
   }
 
-  constructor(private store: ExtensionStore) {
-    store.handle('cookies.get', this.get.bind(this))
-    store.handle('cookies.getAll', this.getAll.bind(this))
-    store.handle('cookies.set', this.set.bind(this))
-    store.handle('cookies.remove', this.remove.bind(this))
-    store.handle('cookies.getAllCookieStores', this.getAllCookieStores.bind(this))
+  constructor(private ctx: ExtensionContext) {
+    const handle = this.ctx.router.apiHandler()
+    handle('cookies.get', this.get.bind(this))
+    handle('cookies.getAll', this.getAll.bind(this))
+    handle('cookies.set', this.set.bind(this))
+    handle('cookies.remove', this.remove.bind(this))
+    handle('cookies.getAllCookieStores', this.getAllCookieStores.bind(this))
+
+    this.cookies.addListener('changed', this.onChanged)
   }
 
   private async get(
@@ -85,9 +92,19 @@ export class CookiesAPI {
   }
 
   private async getAllCookieStores(event: ExtensionEvent): Promise<chrome.cookies.CookieStore[]> {
-    const tabIds = Array.from(this.store.tabs)
+    const tabIds = Array.from(this.ctx.store.tabs)
       .map((tab) => (tab.isDestroyed() ? undefined : tab.id))
       .filter(Boolean) as number[]
     return [{ id: CookieStoreID.Default, tabIds }]
+  }
+
+  private onChanged = (event: Event, cookie: Electron.Cookie, cause: string, removed: boolean) => {
+    const changeInfo: chrome.cookies.CookieChangeInfo = {
+      cause: onChangedCauseTranslation[cause] || cause,
+      cookie: createCookieDetails(cookie),
+      removed,
+    }
+
+    this.ctx.router.broadcastEvent('cookies.onChanged', changeInfo)
   }
 }

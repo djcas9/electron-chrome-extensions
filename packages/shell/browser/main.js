@@ -3,7 +3,7 @@ const { promises: fs } = require('fs')
 const { app, session, BrowserWindow } = require('electron')
 
 const { Tabs } = require('./tabs')
-const { Extensions } = require('electron-chrome-extensions')
+const { ElectronChromeExtensions } = require('electron-chrome-extensions')
 const { setupMenu } = require('./menu')
 const { buildChromeContextMenu } = require('electron-chrome-context-menu')
 
@@ -53,8 +53,12 @@ async function loadExtensions(session, extensionsPath) {
 
   for (const extPath of extensionDirectories.filter(Boolean)) {
     console.log(`Loading extension from ${extPath}`)
-    const extensionInfo = await session.loadExtension(extPath)
-    results.push(extensionInfo)
+    try {
+      const extensionInfo = await session.loadExtension(extPath)
+      results.push(extensionInfo)
+    } catch (e) {
+      console.error(e)
+    }
   }
 
   return results
@@ -84,8 +88,6 @@ class TabbedBrowserWindow {
     this.window = new BrowserWindow(options.window)
     this.id = this.window.id
     this.webContents = this.window.webContents
-
-    this.extensions.addExtensionHost(this.webContents)
 
     const webuiUrl = path.join('chrome-extension://', webuiExtensionId, '/webui.html')
     this.webContents.loadURL(webuiUrl)
@@ -181,7 +183,7 @@ class Browser {
     const browserPreload = path.join(__dirname, '../preload.js')
     this.session.setPreloads([browserPreload])
 
-    this.extensions = new Extensions({
+    this.extensions = new ElectronChromeExtensions({
       session: this.session,
 
       createTab: (details) => {
@@ -202,11 +204,11 @@ class Browser {
       },
       selectTab: (tab, browserWindow) => {
         const win = this.getWindowFromBrowserWindow(browserWindow)
-        win.tabs.select(tab.id)
+        win?.tabs.select(tab.id)
       },
       removeTab: (tab, browserWindow) => {
         const win = this.getWindowFromBrowserWindow(browserWindow)
-        if (win) win.tabs.remove(tab.id)
+        win?.tabs.remove(tab.id)
       },
 
       createWindow: (details) => {
@@ -218,7 +220,7 @@ class Browser {
       },
       removeWindow: (browserWindow) => {
         const win = this.getWindowFromBrowserWindow(browserWindow)
-        win.destroy()
+        win?.destroy()
       },
     })
 
@@ -231,14 +233,6 @@ class Browser {
       this.session,
       path.join(__dirname, '../../../extensions')
     )
-    installedExtensions.forEach((extension) => {
-      this.extensions.addExtension(extension)
-    })
-
-    this.extensions.on('active-tab-changed', (tab, browserWindow) => {
-      const win = this.getWindowFromBrowserWindow(browserWindow)
-      win.tabs.select(tab.id)
-    })
 
     this.createWindow({ initialUrl: newTabUrl })
   }
@@ -283,7 +277,7 @@ class Browser {
   async onWebContentsCreated(event, webContents) {
     const type = webContents.getType()
     const url = webContents.getURL()
-    console.log(`webContents type=${type}, url=${url}`)
+    console.log(`'web-contents-created' event [type:${type}, url:${url}]`)
 
     if (process.env.SHELL_DEBUG && webContents.getType() === 'backgroundPage') {
       webContents.openDevTools({ mode: 'detach', activate: true })

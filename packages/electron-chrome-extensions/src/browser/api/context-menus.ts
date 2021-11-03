@@ -1,30 +1,23 @@
-import { app, Extension, ipcMain, Menu, MenuItem } from 'electron'
+import { Menu, MenuItem } from 'electron'
 import { MenuItemConstructorOptions } from 'electron/main'
+import { ExtensionContext } from '../context'
 import { ExtensionEvent } from '../router'
-import { ExtensionStore } from '../store'
-import { getIconImage, matchesPattern } from './common'
+import { ContextMenuType, getIconImage, matchesPattern } from './common'
 
-type ContextItemProps = chrome.contextMenus.CreateProperties
+type ContextItemProps = chrome.contextMenus.CreateProperties & { id: string }
 
-type ContextType =
-  | 'all'
-  | 'page'
-  | 'frame'
-  | 'selection'
-  | 'link'
-  | 'editable'
-  | 'image'
-  | 'video'
-  | 'audio'
-  | 'launcher'
-  | 'browser_action'
-  | 'page_action'
-  | 'action'
+type ContextItemConstructorOptions = {
+  extension: Electron.Extension
+  props: ContextItemProps
+  webContents: Electron.WebContents
+  params?: Electron.ContextMenuParams
+  showIcon?: boolean
+}
 
 const DEFAULT_CONTEXTS = ['page']
 
-const getContextTypesFromParams = (params: Electron.ContextMenuParams): Set<ContextType> => {
-  const contexts = new Set<ContextType>(['all'])
+const getContextTypesFromParams = (params: Electron.ContextMenuParams): Set<ContextMenuType> => {
+  const contexts = new Set<ContextMenuType>(['all'])
 
   switch (params.mediaType) {
     case 'audio':
@@ -49,23 +42,56 @@ const formatTitle = (title: string, params: Electron.ContextMenuParams) => {
   return title
 }
 
+const matchesConditions = (
+  props: ContextItemProps,
+  conditions: {
+    contextTypes: Set<ContextMenuType>
+    targetUrl?: string
+    documentUrl?: string
+  }
+) => {
+  if (props.visible === false) return false
+
+  const { contextTypes, targetUrl, documentUrl } = conditions
+
+  const contexts = props.contexts || DEFAULT_CONTEXTS
+  const inContext = contexts.some((context) => contextTypes.has(context as ContextMenuType))
+  if (!inContext) return false
+
+  if (props.targetUrlPatterns && props.targetUrlPatterns.length > 0 && targetUrl) {
+    if (!props.targetUrlPatterns.some((pattern) => matchesPattern(pattern, targetUrl))) {
+      return false
+    }
+  }
+
+  if (props.documentUrlPatterns && props.documentUrlPatterns.length > 0 && documentUrl) {
+    if (!props.documentUrlPatterns.some((pattern) => matchesPattern(pattern, documentUrl))) {
+      return false
+    }
+  }
+
+  return true
+}
+
 export class ContextMenusAPI {
   private menus = new Map<
     /* extensionId */ string,
     Map</* menuItemId */ string, ContextItemProps>
   >()
 
-  constructor(private store: ExtensionStore) {
-    store.handle('contextMenus.create', this.create)
-    store.handle('contextMenus.remove', this.remove)
-    store.handle('contextMenus.removeAll', this.removeAll)
+  constructor(private ctx: ExtensionContext) {
+    const handle = this.ctx.router.apiHandler()
+    handle('contextMenus.create', this.create)
+    handle('contextMenus.remove', this.remove)
+    handle('contextMenus.removeAll', this.removeAll)
 
-    // TODO: remove 'any' when project is upgraded to Electron 12
-    this.store.session.on('extension-unloaded' as any, (event, extension: any) => {
+    this.ctx.session.on('extension-unloaded', (event, extension) => {
       if (this.menus.has(extension.id)) {
         this.menus.delete(extension.id)
       }
     })
+
+    this.ctx.store.buildMenuItems = this.buildMenuItemsForExtension.bind(this)
   }
 
   private addContextItem(extensionId: string, props: ContextItemProps) {
@@ -74,76 +100,142 @@ export class ContextMenusAPI {
       contextItems = new Map()
       this.menus.set(extensionId, contextItems)
     }
-    contextItems.set(props.id!, props)
+    contextItems.set(props.id, props)
   }
 
-  buildMenuItems(webContents: Electron.WebContents, params: Electron.ContextMenuParams) {
-    const buildMenuItem = (extension: Electron.Extension, props: ContextItemProps) => {
-      // TODO: try to get the appropriately sized image before resizing
-      let icon = getIconImage(extension)
-      if (icon) {
-        icon = icon.resize({ width: 16, height: 16 })
-      }
+  private buildMenuItem = (opts: ContextItemConstructorOptions) => {
+    const { extension, props, webContents, params } = opts
 
-      const menuItemOptions: MenuItemConstructorOptions = {
-        id: props.id,
-        type: props.type as any,
-        label: formatTitle(props.title || '', params),
-        icon,
-        click: () => {
-          this.onClicked(extension.id, props.id!, params, webContents)
-        },
-      }
-      const menuItem = new MenuItem(menuItemOptions)
-      return menuItem
+    // TODO: try to get the appropriately sized image before resizing
+    let icon = opts.showIcon ? getIconImage(extension) : undefined
+    if (icon) {
+      icon = icon.resize({ width: 16, height: 16 })
     }
 
-    const matchesConditions = (props: ContextItemProps) => {
-      if (props.enabled === false) return false
-
-      const contexts = props.contexts || DEFAULT_CONTEXTS
-      const contextTypes = getContextTypesFromParams(params)
-      const inContext = contexts.some((context) => contextTypes.has(context as ContextType))
-      if (!inContext) return false
-
-      const targetUrl = params.srcURL || params.linkURL
-      if (props.targetUrlPatterns && props.targetUrlPatterns.length > 0 && targetUrl) {
-        if (!props.targetUrlPatterns.some((pattern) => matchesPattern(pattern, targetUrl))) {
-          return false
-        }
-      }
-
-      const documentUrl = params.frameURL || params.pageURL
-      if (props.documentUrlPatterns && props.documentUrlPatterns.length > 0) {
-        if (!props.documentUrlPatterns.some((pattern) => matchesPattern(pattern, documentUrl))) {
-          return false
-        }
-      }
-
-      return true
+    const menuItemOptions: MenuItemConstructorOptions = {
+      id: props.id,
+      type: props.type as any,
+      label: params ? formatTitle(props.title || '', params) : props.title || '',
+      icon,
+      enabled: props.enabled,
+      click: () => {
+        this.onClicked(extension.id, props.id, webContents, params)
+      },
     }
 
-    const menuItems = []
+    return menuItemOptions
+  }
 
-    for (const [extensionId, propItems] of this.menus) {
-      const extension = this.store.session.getExtension(extensionId)
-      if (!extension) continue
+  private buildMenuItemsFromTemplate = (menuItemTemplates: ContextItemConstructorOptions[]) => {
+    const itemMap = new Map<string, MenuItemConstructorOptions>()
 
-      for (const [, props] of propItems) {
-        if (matchesConditions(props)) {
-          const menuItem = buildMenuItem(extension, props)
-          menuItems.push(menuItem)
+    // Group by ID
+    for (const item of menuItemTemplates) {
+      const menuItem = this.buildMenuItem(item)
+      itemMap.set(item.props.id, menuItem)
+    }
+
+    // Organize in tree
+    for (const item of menuItemTemplates) {
+      const menuItem = itemMap.get(item.props.id)
+      if (item.props.parentId) {
+        const parentMenuItem = itemMap.get(item.props.parentId)
+        if (parentMenuItem) {
+          const submenu = (parentMenuItem.submenu || []) as Electron.MenuItemConstructorOptions[]
+          submenu.push(menuItem!)
+          parentMenuItem.submenu = submenu
         }
       }
+    }
+
+    const menuItems: Electron.MenuItem[] = []
+
+    const buildFromTemplate = (opts: Electron.MenuItemConstructorOptions) => {
+      if (Array.isArray(opts.submenu)) {
+        const submenu = new Menu()
+        opts.submenu.forEach((item) => submenu.append(buildFromTemplate(item)))
+        opts.submenu = submenu
+      }
+      return new MenuItem(opts)
+    }
+
+    // Build all final MenuItems in-order
+    for (const item of menuItemTemplates) {
+      // Items with parents will be handled recursively
+      if (item.props.parentId) continue
+
+      const menuItem = itemMap.get(item.props.id)!
+      menuItems.push(buildFromTemplate(menuItem))
     }
 
     return menuItems
   }
 
+  buildMenuItemsForParams(
+    webContents: Electron.WebContents,
+    params: Electron.ContextMenuParams
+  ): Electron.MenuItem[] {
+    if (webContents.session !== this.ctx.session) return []
+
+    const menuItemOptions = []
+
+    const conditions = {
+      contextTypes: getContextTypesFromParams(params),
+      targetUrl: params.srcURL || params.linkURL,
+      documentUrl: params.frameURL || params.pageURL,
+    }
+
+    for (const [extensionId, propItems] of this.menus) {
+      const extension = this.ctx.session.getExtension(extensionId)
+      if (!extension) continue
+
+      for (const [, props] of propItems) {
+        if (matchesConditions(props, conditions)) {
+          const menuItem = {
+            extension,
+            props,
+            webContents,
+            params,
+            showIcon: true,
+          }
+          menuItemOptions.push(menuItem)
+        }
+      }
+    }
+
+    return this.buildMenuItemsFromTemplate(menuItemOptions)
+  }
+
+  private buildMenuItemsForExtension(
+    extensionId: string,
+    menuType: ContextMenuType
+  ): Electron.MenuItem[] {
+    const extensionItems = this.menus.get(extensionId)
+    const extension = this.ctx.session.getExtension(extensionId)
+    const activeTab = this.ctx.store.getActiveTabOfCurrentWindow()
+
+    const menuItemOptions = []
+
+    if (extensionItems && extension && activeTab) {
+      const conditions = {
+        contextTypes: new Set<ContextMenuType>(['all', menuType]),
+      }
+
+      for (const [, props] of extensionItems) {
+        if (matchesConditions(props, conditions)) {
+          const menuItem = { extension, props, webContents: activeTab }
+          menuItemOptions.push(menuItem)
+        }
+      }
+    }
+
+    return this.buildMenuItemsFromTemplate(menuItemOptions)
+  }
+
   private create = ({ extension }: ExtensionEvent, createProperties: ContextItemProps) => {
     const { id, type, title } = createProperties
 
-    if (this.menus.has(id!)) {
+    if (this.menus.has(id)) {
       // TODO: duplicate error
       return
     }
@@ -153,11 +245,7 @@ export class ContextMenusAPI {
       return
     }
 
-    if (createProperties.parentId) {
-      // TODO
-    } else {
-      this.addContextItem(extension.id, createProperties)
-    }
+    this.addContextItem(extension.id, createProperties)
   }
 
   private remove = ({ extension }: ExtensionEvent, menuItemId: string) => {
@@ -177,31 +265,32 @@ export class ContextMenusAPI {
   private onClicked(
     extensionId: string,
     menuItemId: string,
-    params: Electron.ContextMenuParams,
-    webContents: Electron.WebContents
+    webContents: Electron.WebContents,
+    params?: Electron.ContextMenuParams
   ) {
     if (webContents.isDestroyed()) return
 
-    const tab = this.store.tabDetailsCache.get(webContents.id)
+    const tab = this.ctx.store.tabDetailsCache.get(webContents.id)
     if (!tab) {
-      throw new Error(`[Extensions] Unable to find tab for id=${webContents.id}`)
+      console.error(`[Extensions] Unable to find tab for id=${webContents.id}`)
+      return
     }
 
     const data: chrome.contextMenus.OnClickData = {
-      selectionText: params.selectionText,
+      selectionText: params?.selectionText,
       checked: false, // TODO
       menuItemId,
       frameId: -1, // TODO: match frameURL with webFrameMain in Electron 12
-      frameUrl: params.frameURL,
-      editable: params.isEditable,
-      mediaType: params.mediaType,
+      frameUrl: params?.frameURL,
+      editable: params?.isEditable || false,
+      mediaType: params?.mediaType,
       wasChecked: false, // TODO
-      pageUrl: params.pageURL,
-      linkUrl: params.linkURL,
+      pageUrl: params?.pageURL as any, // types are inaccurate
+      linkUrl: params?.linkURL,
       parentMenuItemId: -1, // TODO
-      srcUrl: params.srcURL,
+      srcUrl: params?.srcURL,
     }
 
-    this.store.sendToExtensionHost(extensionId, 'contextMenus.onClicked', data, tab)
+    this.ctx.router.sendEvent(extensionId, 'contextMenus.onClicked', data, tab)
   }
 }

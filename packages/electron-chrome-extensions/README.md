@@ -2,7 +2,7 @@
 
 > Chrome extension API support for Electron.
 
-Electron provides [basic support](https://www.electronjs.org/docs/api/extensions) for Chrome extensions out of the box. However, it only supports a subset of APIs with a focus on DevTools. Concepts like tabs, popups, and extension actions aren't known to Electron.
+Electron provides [basic support for Chrome extensions](https://www.electronjs.org/docs/api/extensions)  out of the box. However, it only supports a subset of APIs with a focus on DevTools. Concepts like tabs, popups, and extension actions aren't known to Electron.
 
 This library aims to bring extension support in Electron up to the level you'd come to expect from a browser like Google Chrome. API behavior is customizable so you can define how to handle things like tab or window creation specific to your application's needs.
 
@@ -26,12 +26,12 @@ Simple browser using Electron's [default session](https://www.electronjs.org/doc
 
 ```js
 const { app, BrowserWindow } = require('electron')
-const { Extensions } = require('electron-chrome-extensions')
+const { ElectronChromeExtensions } = require('electron-chrome-extensions')
 
 (async function main() {
   await app.whenReady()
 
-  const extensions = new Extensions()
+  const extensions = new ElectronChromeExtensions()
   const browserWindow = new BrowserWindow()
 
   // Adds the active tab of the browser
@@ -50,14 +50,14 @@ Multi-tab browser with full support for Chrome extension APIs.
 
 ```js
 const { app, session, BrowserWindow } = require('electron')
-const { Extensions } = require('electron-chrome-extensions')
+const { ElectronChromeExtensions } = require('electron-chrome-extensions')
 
 (async function main() {
   await app.whenReady()
 
   const browserSession = session.fromPartition('persist:custom')
 
-  const extensions = new Extensions({
+  const extensions = new ElectronChromeExtensions({
     session: browserSession,
     createTab(details) {
       // Optionally implemented for chrome.tabs.create support
@@ -93,11 +93,11 @@ const { Extensions } = require('electron-chrome-extensions')
 
 ## API
 
-### Class: Extensions
+### Class: ElectronChromeExtensions
 
-> Create browser APIs for handling Chrome extension requests.
+> Create main process handler for Chrome extension APIs.
 
-#### `new Extensions([options])`
+#### `new ElectronChromeExtensions([options])`
 
 * `options` Object (optional)
   * `modulePath` String (optional) - Path to electron-chrome-extensions module files. Might be needed if JavaScript bundlers like Webpack are used in your build process.
@@ -124,7 +124,7 @@ const { Extensions } = require('electron-chrome-extensions')
     * `browserWindow` Electron.BrowserWindow
 
 ```ts
-new Extensions({
+new ElectronChromeExtensions({
   createTab(details) {
     const tab = myTabApi.createTab()
     if (details.url) {
@@ -167,23 +167,6 @@ Notify the extension system that a tab has been selected as the active tab.
 Returns [`Electron.MenuItem[]`](https://www.electronjs.org/docs/api/menu-item#class-menuitem) -
 An array of all extension context menu items given the context.
 
-##### `extensions.addExtension(extension)`
-
-- `extension` Electron.Extension
-
-Adds an extension to be tracked by the `chrome.browserAction` API. This allows
-the extension to appear as a button in the browser top bar.
-
-_Calling this method is not required in Electron >=12._
-
-##### `extensions.removeExtension(extension)`
-
-- `extension` Electron.Extension
-
-Remove an extension tracked by the `chrome.browserAction` API.
-
-_Calling this method is not required in Electron >=12._
-
 #### Instance Events
 
 ##### Event: 'browser-action-popup-created'
@@ -195,6 +178,8 @@ Returns:
 Emitted when a popup is created by the `chrome.browserAction` API.
 
 ### Element: `<browser-action-list>`
+
+<img src="https://raw.githubusercontent.com/samuelmaddock/electron-browser-shell/master/packages/electron-chrome-extensions/screenshot-browser-action.png" width="438">
 
 The `<browser-action-list>` element provides a row of [browser actions](https://developer.chrome.com/extensions/browserAction) which may be pressed to activate the `chrome.browserAction.onClicked` event or display the extension popup.
 
@@ -234,11 +219,34 @@ Add the `<browser-action-list>` element with attributes appropriate for your app
 <browser-action-list partition="persist:custom" tab="1"></browser-action-list>
 ```
 
+##### Custom CSS
+
+The `<browser-action-list>` element is a [Web Component](https://developer.mozilla.org/en-US/docs/Web/Web_Components). Its styles are encapsulated within a [Shadow DOM](https://developer.mozilla.org/en-US/docs/Web/Web_Components/Using_shadow_DOM). However, it's still possible to customize its appearance using the [CSS shadow parts](https://developer.mozilla.org/en-US/docs/Web/CSS/::part) selector `::part(name)`.
+
+Accessible parts include `action` and `badge`.
+
+```css
+/* Layout action buttons vertically. */
+browser-action-list {
+  flex-direction: column;
+}
+
+/* Modify size of action buttons. */
+browser-action-list::part(action) {
+  width: 16px;
+  height: 16px;
+}
+
+/* Modify hover styles of action buttons. */
+browser-action-list::part(action):hover {
+  background-color: red;
+  border-radius: 0;
+}
+```
+
 ## Supported `chrome.*` APIs
 
 The following APIs are supported, in addition to [those already built-in to Electron.](https://www.electronjs.org/docs/api/extensions)
-
-Although certain APIs may not be implemented, some methods and properties are still defined as noops.
 
 <details>
 <summary>Click to reveal supported APIs</summary>
@@ -258,6 +266,11 @@ Although certain APIs may not be implemented, some methods and properties are st
 - [ ] chrome.browserAction.disable
 - [x] chrome.browserAction.onClicked
 
+### [`chrome.commands`](https://developer.chrome.com/extensions/commands)
+
+- [ ] chrome.commands.getAll
+- [ ] chrome.commands.onCommand
+
 ### [`chrome.cookies`](https://developer.chrome.com/extensions/cookies)
 
 - [x] chrome.cookies.get
@@ -265,7 +278,7 @@ Although certain APIs may not be implemented, some methods and properties are st
 - [x] chrome.cookies.set
 - [x] chrome.cookies.remove
 - [x] chrome.cookies.getAllCookieStores
-- [ ] chrome.cookies.onChanged
+- [x] chrome.cookies.onChanged
 
 ### [`chrome.contextMenus`](https://developer.chrome.com/extensions/contextMenus)
 
@@ -379,8 +392,9 @@ See [Electron's Notification tutorial](https://www.electronjs.org/docs/tutorial/
 ## Limitations
 
 ### electron-chrome-extensions
-- Electron v11 is recommended. Minimum support requires Electron v9.
+- The latest version of Electron is recommended. Minimum support requires Electron v9.
 - Chrome's Manifest V3 extensions are not yet supported.
+- All background scripts are persistent.
 
 ### electron
 - Usage of Electron's `webRequest` API will prevent `chrome.webRequest` listeners from being called.

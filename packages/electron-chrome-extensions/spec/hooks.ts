@@ -1,10 +1,10 @@
-import { ipcMain, session, BrowserWindow, app, Extension } from 'electron'
+import { ipcMain, BrowserWindow, app, Extension } from 'electron'
 import * as http from 'http'
 import * as path from 'path'
 import { AddressInfo } from 'net'
-import { Extensions } from '../dist'
+import { ElectronChromeExtensions } from '../dist'
 import { emittedOnce } from './events-helpers'
-import { uuid } from './spec-helpers'
+import { addCrxPreload, createCrxSession } from './crx-helpers'
 
 export const useServer = () => {
   const emptyPage = '<script>console.log("loaded")</script>'
@@ -35,36 +35,64 @@ export const useServer = () => {
 
 const fixtures = path.join(__dirname, 'fixtures')
 
-export const useExtensionBrowser = (opts: { url: () => string; extensionName: string }) => {
-  const partition = `persist:${uuid()}`
-
+export const useExtensionBrowser = (opts: {
+  url?: () => string
+  file?: string
+  extensionName: string
+  openDevTools?: boolean
+}) => {
   let w: Electron.BrowserWindow
-  let extensions: Extensions
+  let extensions: ElectronChromeExtensions
   let extension: Extension
+  let partition: string
   let customSession: Electron.Session
 
   beforeEach(async () => {
-    customSession = session.fromPartition(partition)
+    const sessionDetails = createCrxSession()
+
+    partition = sessionDetails.partition
+    customSession = sessionDetails.session
+
+    addCrxPreload(customSession)
+
+    extensions = new ElectronChromeExtensions({ session: customSession })
+
     extension = await customSession.loadExtension(path.join(fixtures, opts.extensionName))
-
-    extensions = new Extensions({ session: customSession })
-
-    // TODO: Remove in Electron 12 when we have extension lifecycle events
-    extensions.addExtension(extension)
 
     w = new BrowserWindow({
       show: false,
-      webPreferences: { session: customSession, nodeIntegration: true, contextIsolation: false },
+      webPreferences: { session: customSession, nodeIntegration: false, contextIsolation: true },
     })
+
+    if (opts.openDevTools) {
+      w.webContents.openDevTools({ mode: 'detach' })
+    }
 
     extensions.addTab(w.webContents, w)
 
-    await w.loadURL(opts.url())
+    if (opts.file) {
+      await w.loadFile(opts.file)
+    } else if (opts.url) {
+      await w.loadURL(opts.url())
+    }
+  })
+
+  afterEach(() => {
+    if (!w.isDestroyed()) {
+      if (w.webContents.isDevToolsOpened()) {
+        w.webContents.closeDevTools()
+      }
+
+      w.destroy()
+    }
   })
 
   return {
     get window() {
       return w
+    },
+    get webContents() {
+      return w.webContents
     },
     get extensions() {
       return extensions
@@ -75,13 +103,33 @@ export const useExtensionBrowser = (opts: { url: () => string; extensionName: st
     get session() {
       return customSession
     },
-    partition,
+    get partition() {
+      return partition
+    },
 
-    async exec(method: string, ...args: any[]) {
-      const p = emittedOnce(ipcMain, 'success')
-      await w.webContents.executeJavaScript(`exec('${JSON.stringify({ method, args })}')`)
-      const [, result] = await p
-      return result
+    crx: {
+      async exec(method: string, ...args: any[]) {
+        const p = emittedOnce(ipcMain, 'success')
+        await w.webContents.executeJavaScript(
+          `exec('${JSON.stringify({ type: 'api', method, args })}')`
+        )
+        const [, result] = await p
+        return result
+      },
+
+      async eventOnce(eventName: string) {
+        const p = emittedOnce(ipcMain, 'success')
+        await w.webContents.executeJavaScript(
+          `exec('${JSON.stringify({ type: 'event-once', name: eventName })}')`
+        )
+        const [, results] = await p
+
+        if (typeof results === 'string') {
+          throw new Error(results)
+        }
+
+        return results
+      },
     },
   }
 }

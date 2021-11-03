@@ -21,6 +21,7 @@
 
 const Module = require('module')
 const path = require('path')
+const { promises: fs } = require('fs')
 const v8 = require('v8')
 
 Module.globalPaths.push(path.resolve(__dirname, '../spec/node_modules'))
@@ -62,12 +63,37 @@ protocol.registerSchemesAsPrivileged([
   { scheme: 'stream', privileges: { standard: true, stream: true } },
   { scheme: 'foo', privileges: { standard: true } },
   { scheme: 'bar', privileges: { standard: true } },
+  { scheme: 'crx', privileges: { bypassCSP: true } },
 ])
+
+const cleanupTestSessions = async () => {
+  const sessionsPath = path.join(app.getPath('userData'), 'Partitions')
+
+  let sessions
+
+  try {
+    sessions = await fs.readdir(sessionsPath)
+  } catch (e) {
+    return // dir doesn't exist
+  }
+
+  sessions = sessions.filter((session) => session.startsWith('crx-'))
+  if (sessions.length === 0) return
+
+  console.log(`Cleaning up ${sessions.length} sessions from previous test runners`)
+
+  for (const session of sessions) {
+    const sessionPath = path.join(sessionsPath, session)
+    await fs.rm(sessionPath, { recursive: true, force: true })
+  }
+}
 
 app
   .whenReady()
   .then(async () => {
     require('ts-node/register')
+
+    await cleanupTestSessions()
 
     const argv = require('yargs')
       .boolean('ci')
@@ -148,7 +174,7 @@ app
 
     // Set up chai in the correct order
     const chai = require('chai')
-    chai.use(require('chai-as-promised'));
+    chai.use(require('chai-as-promised'))
     // chai.use(require('dirty-chai'));
 
     const runner = mocha.run(cb)

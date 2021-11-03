@@ -1,13 +1,12 @@
 import { BrowserWindow, webContents } from 'electron'
 import { EventEmitter } from 'events'
+import { ContextMenuType } from './api/common'
 import { ChromeExtensionImpl } from './impl'
-import { ExtensionEvent, ExtensionRouter, HandlerCallback, HandlerOptions } from './router'
+import { ExtensionEvent } from './router'
 
 const debug = require('debug')('electron-chrome-extensions:store')
 
 export class ExtensionStore extends EventEmitter {
-  private router = ExtensionRouter.get()
-
   /** Tabs observed by the extensions system. */
   tabs = new Set<Electron.WebContents>()
 
@@ -24,52 +23,14 @@ export class ExtensionStore extends EventEmitter {
    */
   tabToWindow = new WeakMap<Electron.WebContents, Electron.BrowserWindow>()
 
-  extensionHosts = new Set<Electron.WebContents>()
-
   /** Map of windows to their active tab. */
   private windowToActiveTab = new WeakMap<Electron.BrowserWindow, Electron.WebContents>()
 
   tabDetailsCache = new Map<number, Partial<chrome.tabs.Tab>>()
   windowDetailsCache = new Map<number, Partial<chrome.windows.Window>>()
 
-  constructor(
-    private emitter: EventEmitter,
-    public session: Electron.Session,
-    public impl: ChromeExtensionImpl
-  ) {
+  constructor(public impl: ChromeExtensionImpl) {
     super()
-  }
-
-  /** Emit an event to the public API. */
-  emitPublic(eventName: string, ...args: any[]) {
-    this.emitter.emit(eventName, ...args)
-  }
-
-  sendToHosts(eventName: string, ...args: any[]) {
-    this.extensionHosts.forEach((host) => {
-      if (host.isDestroyed()) {
-        console.error(`Unable to send '${eventName}' to extension host`)
-        return
-      }
-      host.send(eventName, ...args)
-    })
-  }
-
-  sendToExtensionHost(extensionId: string, eventName: string, ...args: any[]) {
-    const extensionPath = `chrome-extension://${extensionId}/`
-    const extensionHost = Array.from(this.extensionHosts).find(
-      (host) => !host.isDestroyed() && host.getURL().startsWith(extensionPath)
-    )
-    if (extensionHost) {
-      extensionHost.send(eventName, ...args)
-    } else {
-      // TODO: need to wake up terminated lazy background hosts
-      throw new Error(`Unable to send '${eventName}' to extension host for ${extensionId}`)
-    }
-  }
-
-  handle(name: string, callback: HandlerCallback, opts?: HandlerOptions) {
-    this.router.handle(this.session, name, callback, opts)
   }
 
   getWindowById(windowId: number) {
@@ -144,6 +105,7 @@ export class ExtensionStore extends EventEmitter {
   removeTab(tab: Electron.WebContents) {
     if (!this.tabs.has(tab)) return
 
+    const tabId = tab.id
     const win = this.tabToWindow.get(tab)!
 
     this.tabs.delete(tab)
@@ -160,6 +122,8 @@ export class ExtensionStore extends EventEmitter {
     if (typeof this.impl.removeTab === 'function') {
       this.impl.removeTab(tab, win)
     }
+
+    this.emit('tab-removed', tabId)
   }
 
   async createTab(details: chrome.tabs.CreateProperties) {
@@ -191,18 +155,6 @@ export class ExtensionStore extends EventEmitter {
     return tab
   }
 
-  addExtensionHost(host: Electron.WebContents) {
-    if (this.extensionHosts.has(host)) return
-
-    this.extensionHosts.add(host)
-
-    host.once('destroyed', () => {
-      this.extensionHosts.delete(host)
-    })
-
-    debug(`Observing extension host[${host.id}][${host.getType()}] ${host.getURL()}`)
-  }
-
   getActiveTabFromWindow(win: Electron.BrowserWindow) {
     const activeTab = win && !win.isDestroyed() && this.windowToActiveTab.get(win)
     return (activeTab && !activeTab.isDestroyed() && activeTab) || undefined
@@ -230,7 +182,15 @@ export class ExtensionStore extends EventEmitter {
 
     if (tab.id !== prevActiveTab?.id) {
       this.emit('active-tab-changed', tab, win)
-      this.emitPublic('active-tab-changed', tab, win)
+
+      if (typeof this.impl.selectTab === 'function') {
+        this.impl.selectTab(tab, win)
+      }
     }
+  }
+
+  buildMenuItems(extensionId: string, menuType: ContextMenuType): Electron.MenuItem[] {
+    // This function is overwritten by ContextMenusAPI
+    return []
   }
 }

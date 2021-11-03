@@ -1,6 +1,6 @@
 import * as electron from 'electron'
+import { ExtensionContext } from '../context'
 import { ExtensionEvent } from '../router'
-import { ExtensionStore } from '../store'
 
 const debug = require('debug')('electron-chrome-extensions:webNavigation')
 
@@ -30,11 +30,12 @@ const getFrameDetails = (frame: any) => ({
 })
 
 export class WebNavigationAPI {
-  constructor(private store: ExtensionStore) {
-    store.handle('webNavigation.getFrame', this.getFrame.bind(this))
-    store.handle('webNavigation.getAllFrames', this.getAllFrames.bind(this))
+  constructor(private ctx: ExtensionContext) {
+    const handle = this.ctx.router.apiHandler()
+    handle('webNavigation.getFrame', this.getFrame.bind(this))
+    handle('webNavigation.getAllFrames', this.getAllFrames.bind(this))
 
-    store.on('tab-added', this.observeTab.bind(this))
+    this.ctx.store.on('tab-added', this.observeTab.bind(this))
   }
 
   private observeTab(tab: Electron.WebContents) {
@@ -43,14 +44,28 @@ export class WebNavigationAPI {
     tab.on('did-frame-finish-load', this.onFinishLoad as any)
     tab.on('did-frame-navigate', this.onCommitted as any)
     tab.on('did-navigate-in-page', this.onHistoryStateUpdated as any)
-    tab.on('dom-ready', this.onDOMContentLoaded as any)
+
+    tab.on('frame-created', (e, { frame }) => {
+      if (frame.top === frame) return
+
+      frame.on('dom-ready', () => {
+        this.onDOMContentLoaded(tab, frame)
+      })
+    })
+
+    // Main frame dom-ready event
+    tab.on('dom-ready', () => {
+      if ('mainFrame' in tab) {
+        this.onDOMContentLoaded(tab, tab.mainFrame)
+      }
+    })
   }
 
   private getFrame(
     event: ExtensionEvent,
     details: chrome.webNavigation.GetFrameDetails
   ): chrome.webNavigation.GetFrameResultDetails | null {
-    const tab = this.store.getTabById(details.tabId)
+    const tab = this.ctx.store.getTabById(details.tabId)
     if (!tab) return null
 
     let targetFrame: any
@@ -73,14 +88,14 @@ export class WebNavigationAPI {
     event: ExtensionEvent,
     details: chrome.webNavigation.GetFrameDetails
   ): chrome.webNavigation.GetAllFrameResultDetails[] | null {
-    const tab = this.store.getTabById(details.tabId)
+    const tab = this.ctx.store.getTabById(details.tabId)
     if (!tab || !('mainFrame' in tab)) return []
     return (tab as any).mainFrame.framesInSubtree.map(getFrameDetails)
   }
 
   private sendNavigationEvent = (eventName: string, details: { url: string }) => {
     debug(`${eventName} [url: ${details.url}]`)
-    this.store.sendToHosts(`webNavigation.${eventName}`, details)
+    this.ctx.router.broadcastEvent(`webNavigation.${eventName}`, details)
   }
 
   private onCreatedNavigationTarget = (
@@ -174,21 +189,18 @@ export class WebNavigationAPI {
     this.sendNavigationEvent('onHistoryStateUpdated', details)
   }
 
-  private onDOMContentLoaded = (event: Electron.IpcMainEvent) => {
-    const url = event.sender.getURL()
-    // TODO: Add support for iframes
-    // https://github.com/electron/electron/issues/27344
+  private onDOMContentLoaded = (tab: Electron.WebContents, frame: Electron.WebFrameMain) => {
     const details: chrome.webNavigation.WebNavigationParentedCallbackDetails = {
-      frameId: 0,
-      parentFrameId: -1,
-      processId: 0,
-      tabId: event.sender.id,
+      frameId: getFrameId(frame),
+      parentFrameId: getParentFrameId(frame),
+      processId: frame.processId,
+      tabId: tab.id,
       timeStamp: Date.now(),
-      url,
+      url: frame.url,
     }
     this.sendNavigationEvent('onDOMContentLoaded', details)
 
-    if (!event.sender.isLoadingMainFrame()) {
+    if (!tab.isLoadingMainFrame()) {
       this.sendNavigationEvent('onCompleted', details)
     }
   }
