@@ -54,7 +54,6 @@ const getBrowserActionDefaults = (extension: Electron.Extension): ExtensionActio
   extensionAction.title = manifestAction.default_title || manifest.name
 
   const iconPath = getIconPath(extension)
-  console.log(`iconPath: ${iconPath}`)
   if (iconPath) extensionAction.icon = { path: iconPath }
 
   if (manifestAction.default_popup) {
