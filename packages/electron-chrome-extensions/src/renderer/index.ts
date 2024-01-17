@@ -56,14 +56,48 @@ export const injectExtensionAPIs = () => {
     removeExtensionListener,
   }
 
+  function patchWindowOpen() {
+    // ts-ignore
+    window.open = function (
+      url: string | URL | undefined,
+      target?: string | undefined,
+      windowFeatures?: string | undefined
+    ) {
+      //const result = original.apply(this, [url, target, windowFeatures]);
+      if (typeof url === 'string') {
+        console.log('Patched window.open')
+        chrome.tabs.create({ url })
+      }
+      return null
+    }
+  }
+
   // Function body to run in the main world.
   // IMPORTANT: This must be self-contained, no closure variable will be included!
   function mainWorldScript() {
+    function patchWindowOpen() {
+      // ts-ignore
+      window.open = function (
+        url: string | URL | undefined,
+        target?: string | undefined,
+        windowFeatures?: string | undefined
+      ) {
+        //const result = original.apply(this, [url, target, windowFeatures]);
+        if (typeof url === 'string') {
+          console.log('Patched window.open')
+          chrome.tabs.create({ url })
+        }
+        return null
+      }
+    }
+
     // Use context bridge API or closure variable when context isolation is disabled.
     const electron = ((window as any).electron as typeof electronContext) || electronContext
 
     const chrome = window.chrome || {}
     const extensionId = chrome.runtime?.id
+
+    patchWindowOpen()
 
     // NOTE: This uses a synchronous IPC to get the extension manifest.
     // To avoid this, JS bindings for RendererExtensionRegistry would be
@@ -136,7 +170,9 @@ export const injectExtensionAPIs = () => {
     type APIFactoryMap = {
       [apiName in keyof typeof chrome]: {
         shouldInject?: () => boolean
-        factory: (base: DeepPartial<typeof chrome[apiName]>) => DeepPartial<typeof chrome[apiName]>
+        factory: (
+          base: DeepPartial<(typeof chrome)[apiName]>
+        ) => DeepPartial<(typeof chrome)[apiName]>
       }
     }
 
@@ -336,8 +372,8 @@ export const injectExtensionAPIs = () => {
               // tab. To handle this, we need to get the active tab ID and
               // pass it into the C++ implementation ourselves.
               if (typeof arg1 === 'object' || arg1 === null) {
-                const passArg1 = arg1 !== null ? arg1 : arg2;
-                const passArg2 = arg1 !== null ? arg2 : arg3;
+                const passArg1 = arg1 !== null ? arg1 : arg2
+                const passArg2 = arg1 !== null ? arg2 : arg3
                 api.query(
                   { active: true, windowId: chrome.windows.WINDOW_ID_CURRENT },
                   ([activeTab]: chrome.tabs.Tab[]) => {
