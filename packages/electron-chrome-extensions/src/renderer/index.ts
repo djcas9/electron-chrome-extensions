@@ -86,6 +86,9 @@ export const injectExtensionAPIs = () => {
         if (typeof url === 'string') {
           console.log('Patched window.open')
           chrome.tabs.create({ url })
+        } else if (url instanceof URL) {
+          console.log('Patched window.open')
+          chrome.tabs.create({ url: url.href })
         }
         return null
       }
