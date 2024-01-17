@@ -28,6 +28,13 @@ describe('chrome.tabs', () => {
     })
   })
 
+  describe('getSelected()', () => {
+    it('gets details of the active tab', async () => {
+      const result = await browser.crx.exec('tabs.getSelected')
+      expect(result).to.be.an('object')
+    })
+  })
+
   describe('create()', () => {
     it('creates a tab', async () => {
       const wcPromise = emittedOnce(app, 'web-contents-created')

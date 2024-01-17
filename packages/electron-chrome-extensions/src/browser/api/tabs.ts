@@ -32,6 +32,7 @@ export class TabsAPI {
     handle('tabs.get', this.get.bind(this))
     handle('tabs.getAllInWindow', this.getAllInWindow.bind(this))
     handle('tabs.getCurrent', this.getCurrent.bind(this))
+    handle('tabs.getSelected', this.getSelected.bind(this))
     handle('tabs.create', this.create.bind(this))
     handle('tabs.insertCSS', this.insertCSS.bind(this))
     handle('tabs.query', this.query.bind(this))
@@ -154,6 +155,11 @@ export class TabsAPI {
   }
 
   private getCurrent(event: ExtensionEvent) {
+    const tab = this.ctx.store.getActiveTabOfCurrentWindow()
+    return tab ? this.getTabDetails(tab) : undefined
+  }
+
+  private getSelected(event: ExtensionEvent) {
     const tab = this.ctx.store.getActiveTabOfCurrentWindow()
     return tab ? this.getTabDetails(tab) : undefined
   }

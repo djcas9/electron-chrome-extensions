@@ -328,6 +328,7 @@ See [Electron's Notification tutorial](https://www.electronjs.org/docs/tutorial/
 
 - [x] chrome.tabs.get
 - [x] chrome.tabs.getCurrent
+- [x] chrome.tabs.getSelected
 - [x] chrome.tabs.connect
 - [x] chrome.tabs.sendMessage
 - [x] chrome.tabs.create
