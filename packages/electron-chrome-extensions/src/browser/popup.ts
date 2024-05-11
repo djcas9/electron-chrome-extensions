@@ -97,15 +97,24 @@ export class PopupView {
 
     if (this.destroyed) return
 
-    if (this.usingPreferredSize) {
-      // Set small initial size so the preferred size grows to what's needed
-      this.setSize({ width: PopupView.BOUNDS.minWidth, height: PopupView.BOUNDS.minHeight })
-    } else {
-      // Set large initial size to avoid overflow
-      this.setSize({ width: PopupView.BOUNDS.maxWidth, height: PopupView.BOUNDS.maxHeight })
+    const hasChildNodes = await this.browserWindow!.webContents.executeJavaScript(
+      `((${() => {
+        return document.body.hasChildNodes();
+      }})())`
+    )
+
+    if (!hasChildNodes) {
+      this.destroy()
+      return
+    }
+
+    if (!this.usingPreferredSize) {
+      this.setSize({width: PopupView.BOUNDS.minWidth, height: PopupView.BOUNDS.minHeight});
 
       // Wait for content and layout to load
-      await new Promise((resolve) => setTimeout(resolve, 100))
+      // Ideally we would wait for DOM to finish loading instead of a timeout which doesn't work reliably
+      // E.g.: grammarly depending on machine speed will not show up correctly, and will be locked at a smaller size cutting off content.
+      await new Promise((resolve) => setTimeout(resolve, 200))
       if (this.destroyed) return
 
       await this.queryPreferredSize()
@@ -221,7 +230,33 @@ export class PopupView {
 
     const rect = await this.browserWindow!.webContents.executeJavaScript(
       `((${() => {
-        const rect = document.body.getBoundingClientRect()
+
+        // rect here will not always reflect truely what the content is, and sometimes
+        // reflects what the size of the client window was instead
+        // prior to this call, we'll set our window width/height to the minimum and if our bounding rect here is unchanged from that
+        // we will manually calculate children to get a more accurate width or height
+        let rect = document.body.getBoundingClientRect()
+        var children = document.body.children
+
+        const defaultMinWidth = 25;
+        const defaultMinHeight = 25;
+
+        if (rect.width == defaultMinWidth) {
+          rect.width = 0;
+          for (var i = 0; i < children.length; i++) {
+            //@ts-ignore
+            rect.width += children[i].offsetWidth;
+          }
+        }
+
+        if (rect.height == defaultMinHeight) {
+          rect.height = 0;
+          for (var i = 0; i < children.length; i++) {
+            //@ts-ignore
+            rect.height += children[i].offsetHeight;
+          }
+        }
+
         return { width: rect.width, height: rect.height }
       }})())`
     )
