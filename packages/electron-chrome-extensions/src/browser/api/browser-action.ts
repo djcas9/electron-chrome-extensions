@@ -38,21 +38,28 @@ interface ActivateDetails {
 
 const getBrowserActionDefaults = (extension: Electron.Extension): ExtensionAction | undefined => {
   const manifest = getExtensionManifest(extension)
-  const { browser_action } = manifest
-  if (typeof browser_action === 'object') {
-    const action: ExtensionAction = {}
+  const { action, browser_action } = manifest
+  let manifestAction: any = {}
 
-    action.title = browser_action.default_title || manifest.name
-
-    const iconPath = getIconPath(extension)
-    if (iconPath) action.icon = { path: iconPath }
-
-    if (browser_action.default_popup) {
-      action.popup = browser_action.default_popup
-    }
-
-    return action
+  if (typeof action === 'object') {
+    manifestAction = action
+  } else if (typeof browser_action === 'object') {
+    manifestAction = browser_action
+  } else {
+    return
   }
+
+  const extensionAction: ExtensionAction = {}
+  extensionAction.title = manifestAction.default_title || manifest.name
+
+  const iconPath = getIconPath(extension)
+  if (iconPath) extensionAction.icon = { path: iconPath }
+
+  if (manifestAction.default_popup) {
+    extensionAction.popup = manifestAction.default_popup
+  }
+
+  return extensionAction
 }
 
 interface ExtensionActionStore extends Partial<ExtensionAction> {
@@ -167,7 +174,7 @@ export class BrowserActionAPI {
 
     this.ctx.store.on('active-tab-changed', () => {
       this.onUpdate()
-      this.popup?.browserWindow?.blur();
+      this.popup?.browserWindow?.blur()
     })
 
     // Clear out tab details when removed
@@ -425,7 +432,8 @@ export class BrowserActionAPI {
       label: extension.name,
       click: () => {
         const homePageUrl =
-          manifest.homepage_url || `https://chrome.google.com/webstore/detail/${extension.path.split("/").at(-1)}`
+          manifest.homepage_url ||
+          `https://chrome.google.com/webstore/detail/${extension.path.split('/').at(-1)}`
         this.ctx.store.createTab({ url: homePageUrl })
       },
     })
