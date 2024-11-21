@@ -1,6 +1,6 @@
 {
-  "name": "@polypane/electron-chrome-extensions",
-  "version": "3.16.0",
+  "name": "@mephux/electron-chrome-extensions",
+  "version": "3.16.1",
   "description": "Chrome extension support for Electron",
   "main": "dist/index.js",
   "scripts": {
@@ -9,11 +9,7 @@
     "test": "node ./script/spec-runner.js",
     "prepublishOnly": "npm run build"
   },
-  "keywords": [
-    "electron",
-    "chrome",
-    "extensions"
-  ],
+  "keywords": ["electron", "chrome", "extensions"],
   "repository": "https://github.com/polypane/electron-chrome-extensions",
   "author": "Samuel Maddock <sam@samuelmaddock.com>",
   "license": "SEE LICENSE IN LICENSE.md",
